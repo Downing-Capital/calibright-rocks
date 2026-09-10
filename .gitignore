@@ -1,0 +1,6 @@
+# This repository is PUBLIC. Never commit workbook data or backups here —
+# doing so would publish Calibright's confidential quarterly plans.
+*backup*.txt
+*backup*.json
+*.csv
+_preview_scratch.html
