@@ -328,6 +328,7 @@ textarea.fc{resize:vertical;min-height:54px}
       <button class="btn btn-ghost" onclick="addNSRow()">+ Add metric</button>
     </div>
   </div></div>
+  <div id="load-banner" style="display:none"></div>
   <div class="content">
 
     <div id="panel-northstar" class="panel">
@@ -970,6 +971,12 @@ function saveToSupabase() {
     console.warn('saveToSupabase: no auth session, skipping');
     return;
   }
+  // Never overwrite the shared workbook with a copy we failed to read first.
+  if (!_loadOk) {
+    console.warn('saveToSupabase: blocked — the workbook was never loaded successfully in this session.');
+    setSyncStatus('blocked');
+    return;
+  }
   D._v = DATA_VERSION;
   var payload = { id: SB_ID, data: serializeD(), updated_at: new Date().toISOString() };
   fetch(SB_URL + '/rest/v1/' + SB_TABLE, {
@@ -1001,7 +1008,34 @@ function setSyncStatus(state) {
   } else if (state === 'error') {
     el.textContent = '⚠ Sync error';
     el.style.color = 'var(--amber)';
+  } else if (state === 'blocked') {
+    el.textContent = '⚠ Not saving';
+    el.style.color = 'var(--red)';
+  } else {
+    el.textContent = '';   // clears the indicator (previously it stuck on "Loading…")
   }
+}
+
+// ── Load state guard ───────────────────────────────────────────────────────
+// The workbook is one row shared by everyone. If this browser never managed to
+// READ that row, its in-memory copy is empty — and saving would replace the real
+// workbook with nothing. So saving stays switched off until a load has succeeded.
+var _loadOk = false;
+
+function blockSaving(title, detail) {
+  _loadOk = false;
+  setSyncStatus('blocked');
+  var b = document.getElementById('load-banner');
+  if (!b) return;
+  b.style.display = '';
+  b.style.cssText = 'display:block;margin:0 0 16px;padding:12px 16px;border:1px solid var(--red);border-left:4px solid var(--red);border-radius:var(--r);background:var(--red-bg);color:var(--red-tx);font-size:12.5px;line-height:1.6';
+  b.innerHTML = '<strong>'+esc(title)+'</strong><br>'+esc(detail)+
+    '<br><br><strong>Your changes are not being saved.</strong> Nothing you type here will be kept, and the workbook has not been altered. Please contact whoever administers this site rather than re-entering the rocks.';
+}
+
+function clearLoadBanner() {
+  var b = document.getElementById('load-banner');
+  if (b) { b.style.display = 'none'; b.innerHTML = ''; }
 }
 
 function load() {
@@ -1031,15 +1065,26 @@ function load() {
     console.log('Supabase load response:', JSON.stringify(rows).substring(0, 200));
     if (rows && rows.length > 0 && rows[0].data) {
       applyData(rows[0].data);
-      try { D._v=DATA_VERSION; localStorage.setItem(STORE, JSON.stringify(D)); } catch(e) {}
+      _loadOk = true;
+      clearLoadBanner();
+      setSyncStatus('');
+      try { D._v=DATA_VERSION; localStorage.setItem(STORE, JSON.stringify(serializeD())); } catch(e) {}
+    } else if (rows && rows.error) {
+      console.warn('Supabase load error:', rows);
+      blockSaving('Could not open the workbook.',
+        'The database refused the request: ' + (rows.message || rows.error) + '.');
     } else {
+      // Authenticated fine, but the row came back empty — almost always the
+      // table's row-level security policy not granting this account access.
       console.warn('Supabase returned no rows — RLS may be blocking read. Token used:', authToken() ? 'session token' : 'anon key');
+      blockSaving('This account cannot see the workbook.',
+        'You are signed in, but the database returned no data for this account. That usually means your user has not been granted access to this workbook.');
     }
-    setSyncStatus('');
     bootApp(); // seeds run inside bootApp after data is applied
   }).catch(function(e) {
     console.warn('Supabase load failed, using local data:', e);
-    setSyncStatus('error');
+    blockSaving('Could not reach the workbook.',
+      'The connection to the database failed (' + (e && e.message ? e.message : 'network error') + ').');
     bootApp();
   });
 }
@@ -2680,7 +2725,11 @@ function renderAllRocks() {
   el.innerHTML = '';
 
   if (!rocks.length) {
-    el.innerHTML = '<div class="empty" style="padding:32px">No rocks yet — click "+ Add Rock" to get started</div>';
+    // Don't invite someone to start typing rocks when the reason the list is
+    // empty is that their workbook never loaded.
+    el.innerHTML = _loadOk
+      ? '<div class="empty" style="padding:32px">No rocks yet — click "+ Add Rock" to get started</div>'
+      : '<div class="empty" style="padding:32px">The workbook could not be loaded for this account — see the message above. This is not an empty quarter.</div>';
     return;
   }
 
